@@ -32,6 +32,28 @@ from tensorflow.keras.models import Sequential
 logging.basicConfig(filename='output.log', level=logging.DEBUG, 
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
+# Suppress TensorFlow warnings
+import os
+
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress TensorFlow logging
+import tensorflow as tf
+
+tf.get_logger().setLevel('ERROR')  # Suppress TensorFlow warnings
+
+# Optional: Suppress CUDA warnings
+import warnings
+
+warnings.filterwarnings('ignore', category=RuntimeWarning)
+
+# Configure GPU memory growth
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+    try:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+    except RuntimeError as e:
+        print(f"GPU configuration error: {e}")
+
 # ## Data Gathering and Evaluation
 # I found 5 sources for daily weather data in New York City as follows:
 # 1. National Centers for Environmental Information (NCEI)
@@ -133,59 +155,93 @@ while start_date <= last_date:
 # In[406]:
 
 
-# Define the URL for NYC data
-url = "https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline/New%20York%20City%2CUSA/2020-11-01/2021-11-01"
-# Define the query parameters
-params = {
-    "unitGroup": "us",
-    "include": "day",
-    "key": "WS8SPUNTV45687SM8PE4SP8EC",
-    "contentType": "csv"
-}
+# Define Visual Crossing API constants
+VC_API_KEY = "WS8SPUNTV45687SM8PE4SP8EC"  # Your API key
+VC_BASE_URL = "https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline"
 
+def get_visual_crossing_data():
+    """Get weather data from Visual Crossing API"""
+    try:
+        # Format dates and location
+        location = "New York City,USA"
+        start_date = "2020-11-01"
+        end_date = "2021-11-01"
+        
+        # Construct URL and parameters
+        url = f"{VC_BASE_URL}/{urllib.parse.quote(location)}/{start_date}/{end_date}"
+        params = {
+            "unitGroup": "us",
+            "include": "days",  # Changed from "day" to "days" per API docs
+            "key": VC_API_KEY,
+            "contentType": "json"  # Changed to JSON for easier processing
+        }
+
+        # Make API request
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        
+        # Process JSON response
+        data = response.json()
+        if 'days' not in data:
+            raise ValueError("No daily data found in API response")
+            
+        # Convert to DataFrame
+        df = pd.DataFrame(data['days'])
+        
+        # Select relevant columns
+        df = df[['datetime', 'tempmax', 'dew', 'humidity', 'precip', 'windgust',
+                'windspeed', 'sealevelpressure', 'solarradiation', 'solarenergy']]
+        
+        # Convert datetime
+        df['datetime'] = pd.to_datetime(df['datetime'])
+        
+        logging.info("Successfully retrieved and processed Visual Crossing data")
+        return df
+        
+    except requests.exceptions.RequestException as e:
+        logging.error(f"API request failed: {str(e)}")
+        return None
+    except (ValueError, KeyError) as e:
+        logging.error(f"Error processing API response: {str(e)}")
+        return None
+    except Exception as e:
+        logging.error(f"Unexpected error: {str(e)}")
+        return None
+
+# Get data from API or fallback to CSV
 try:
-    # API request with params
-    response = requests.get(url, params=params)
-    response.raise_for_status()  # Raises an HTTPError for bad responses
-    print("API request successful")
-    # Convert csv to DataFrame
-    csv_data = pd.DataFrame(response)
-except requests.exceptions.RequestException as e:
-    print(f"API request failed: {str(e)}")
-    logging.error(f"API request failed: {str(e)}")
-    csv_data = None
-
-# Process Visual Crossing data
-try:
-    vs_df = pd.read_csv("visual_crossing.csv")
-    # Select only relevant columns
-    vs_df = vs_df[['datetime', 'tempmax', 'dew', 'humidity', 'precip', 'windgust',
-                   'windspeed', 'sealevelpressure', 'solarradiation', 'solarenergy']]
-    # Convert datetime column to datetime data type
-    vs_df['datetime'] = pd.to_datetime(vs_df['datetime'])
-    logging.info("Successfully processed Visual Crossing data")
-except FileNotFoundError:
-    print("The 'visual_crossing.csv' file is missing. Skipping the processing of Visual Crossing data.")
-    logging.warning("Visual Crossing CSV file not found")
+    vs_df = get_visual_crossing_data()
+    
+    # If API fails, try reading from CSV
+    if vs_df is None:
+        logging.info("Falling back to CSV file")
+        vs_df = pd.read_csv("visual_crossing.csv")
+        vs_df['datetime'] = pd.to_datetime(vs_df['datetime'])
+        vs_df = vs_df[['datetime', 'tempmax', 'dew', 'humidity', 'precip', 'windgust',
+                       'windspeed', 'sealevelpressure', 'solarradiation', 'solarenergy']]
+    
+    # Process the DataFrame
+    if vs_df is not None:
+        # Drop NaN values
+        vs_df = vs_df.dropna()
+        logging.debug(f"Visual Crossing DataFrame after dropping NaNs: {vs_df.head()}")
+        
+        # Set 'datetime' as the index
+        vs_df.set_index('datetime', inplace=True)
+        
+        # Create the time series plot
+        plt.figure(figsize=(14, 6))
+        plt.plot(vs_df.index, vs_df['tempmax'], marker='o', linestyle='-', color='b')
+        plt.title('New York Max Temperature (2022 - 2023)')
+        plt.xlabel('Date')
+        plt.ylabel('Temperature (°F)')
+        plt.show()
+    else:
+        logging.error("Failed to obtain weather data from both API and CSV")
+        
+except Exception as e:
+    logging.error(f"Error processing weather data: {str(e)}")
     vs_df = None
-except pd.errors.EmptyDataError:
-    print("The 'visual_crossing.csv' file is empty. Skipping the processing of Visual Crossing data.")
-    logging.warning("Visual Crossing CSV file is empty")
-    vs_df = None
-
-# Rest of the code that uses vs_df
-if vs_df is not None:
-    # Drop NaN values
-    vs_df = vs_df.dropna()
-    logging.debug(f"Visual Crossing DataFrame after dropping NaNs: {vs_df.head()}")
-    # Set 'Date' as the index (required for time series plotting)
-    vs_df.set_index('datetime', inplace=True)
-    # Create the time series plot
-    plt.figure(figsize=(14, 6))
-    plt.plot(vs_df.index, vs_df['tempmax'], marker='o', linestyle='-', color='b')
-    plt.title('New York Max Temperature (2022 - 2023)')
-    plt.xlabel('Date')
-    plt.ylabel('Temperature (°F)')
 
 
 # ### Yahoo Weather
@@ -195,8 +251,16 @@ if vs_df is not None:
 # In[153]:
 
 
-yahoo = pd.read_html("https://www.yahoo.com/news/weather/united-states/new-york/new-york-2459115")
-print(yahoo)
+try:
+    yahoo = pd.read_html("https://www.yahoo.com/news/weather/united-states/new-york/new-york-2459115")
+    if yahoo:  # Check if any tables were found
+        print("Yahoo Weather Data:")
+        print(yahoo)
+    else:
+        logging.warning("No weather data tables found on Yahoo Weather page")
+except Exception as e:
+    logging.error(f"Error fetching Yahoo Weather data: {str(e)}")
+    yahoo = None
 
 
 # Gathering relevant weather data to predict the daily maximum temperature in New York was a challenging endeavor. Identifying credible and dependable data sources was not easy. Once I had pinpointed these sources, I encountered further obstacles in scraping or downloading the data. The insufficiency of some API documentation added a layer of complexity, as understanding how to extract the right data often demanded a significant investment of time and effort.
