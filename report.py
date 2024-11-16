@@ -138,23 +138,24 @@ url = "https://weather.visualcrossing.com/VisualCrossingWebServices/rest/service
 # Define the query parameters
 params = {
     "unitGroup": "us",
-     "include": "day",
+    "include": "day",
     "key": "WS8SPUNTV45687SM8PE4SP8EC",
     "contentType": "csv"
 }
-    # API request
-response = requests.get(url)
-if response.status_code == 200:
+
+try:
+    # API request with params
+    response = requests.get(url, params=params)
+    response.raise_for_status()  # Raises an HTTPError for bad responses
     print("API request successful")
     # Convert csv to DataFrame
     csv_data = pd.DataFrame(response)
-else:
-    print(f"API request failed with status code {response.status_code}")
+except requests.exceptions.RequestException as e:
+    print(f"API request failed: {str(e)}")
+    logging.error(f"API request failed: {str(e)}")
+    csv_data = None
 
-
-In[407]:
-
-
+# Process Visual Crossing data
 try:
     vs_df = pd.read_csv("visual_crossing.csv")
     # Select only relevant columns
@@ -162,11 +163,14 @@ try:
                    'windspeed', 'sealevelpressure', 'solarradiation', 'solarenergy']]
     # Convert datetime column to datetime data type
     vs_df['datetime'] = pd.to_datetime(vs_df['datetime'])
+    logging.info("Successfully processed Visual Crossing data")
 except FileNotFoundError:
     print("The 'visual_crossing.csv' file is missing. Skipping the processing of Visual Crossing data.")
+    logging.warning("Visual Crossing CSV file not found")
     vs_df = None
 except pd.errors.EmptyDataError:
     print("The 'visual_crossing.csv' file is empty. Skipping the processing of Visual Crossing data.")
+    logging.warning("Visual Crossing CSV file is empty")
     vs_df = None
 
 # Rest of the code that uses vs_df
