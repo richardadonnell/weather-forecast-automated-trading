@@ -190,15 +190,27 @@ try:
             
             # Set index and create visualization
             ncei_df.set_index('date', inplace=True)
+            logging.debug(f"NCEI DataFrame with 'date' as index: {ncei_df.head()}")
             
-            # Visualize the data
-            # ... (visualization code remains the same)
+            # Visualize the temperature data
+            plt.figure(figsize=(14, 5))
+            plt.plot(ncei_df.index, ncei_df['max temp'], marker='o', linestyle='-', color='b')
+            plt.title('New York Max Temperature (2019 - 2023)')
+            plt.xlabel('Date')
+            plt.ylabel('Temperature (°F)')
+            plt.show()
+
+            # Visualize the precipitation data
+            plt.figure(figsize=(14, 5))
+            plt.plot(ncei_df.index, ncei_df['precipitation'], marker='o', linestyle='-', color='b')
+            plt.title('New York Daily Precipitation (2019 - 2023)')
+            plt.xlabel('Date')
+            plt.ylabel('Precipitation (inches)')
+            plt.show()
         else:
             logging.error("Failed to process NCEI data")
-            ncei_df = pd.DataFrame()  # Set ncei_df to an empty DataFrame if processing fails
     else:
         logging.error("Failed to retrieve NCEI data")
-        ncei_df = pd.DataFrame()  # Set ncei_df to an empty DataFrame if retrieval fails
         
 except Exception as e:
     logging.error(f"Error processing NCEI data: {str(e)}")
