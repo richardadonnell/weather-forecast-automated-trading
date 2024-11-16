@@ -50,3 +50,4 @@ vs/
 predict-temperature.ipynb
 venv/
 output.log
+*.deb

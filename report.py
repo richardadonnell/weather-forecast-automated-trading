@@ -2,12 +2,18 @@
 # coding: utf-8
 
 import logging
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
 plt.style.use("fivethirtyeight")
 import datetime
+# Add these imports at the top
+import time
+import uuid
+from functools import wraps
+from typing import Any, Dict
 
 # API
 import requests
@@ -21,12 +27,6 @@ from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.layers import LSTM, Dense
 from tensorflow.keras.models import Sequential
-
-# Add these imports at the top
-import time
-import uuid
-from functools import wraps
-from typing import Any, Dict
 
 # Configure logging
 logging.basicConfig(filename='output.log', level=logging.DEBUG, 
@@ -121,7 +121,7 @@ while start_date <= last_date:
         # Convert JSON to DataFrame
         json_data = pd.DataFrame(response.json()["results"])
         result = pd.DataFrame(json_data)
-        api = api.append(json_data)
+        api = pd.concat([api, json_data], ignore_index=True)
     else:
         print(f"API request failed with status code {response.status_code}")
 
