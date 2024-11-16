@@ -51,3 +51,6 @@ predict-temperature.ipynb
 venv/
 output.log
 *.deb
+NVIDIA-Linux-x86_64-550.127.05.run
+NVIDIA-Linux-x86_64-550.127.05.runcom.dropbox.attrs
+NVIDIA-Linux-x86_64-550.127.05.runZone.Identifier
