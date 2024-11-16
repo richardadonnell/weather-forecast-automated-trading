@@ -49,3 +49,4 @@ ipython_config.py
 vs/
 predict-temperature.ipynb
 venv/
+output.log

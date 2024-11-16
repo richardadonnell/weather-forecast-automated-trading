@@ -1,9 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[4]:
-
-
+import logging
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -24,6 +22,16 @@ from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.layers import LSTM, Dense
 from tensorflow.keras.models import Sequential
 
+# Add these imports at the top
+import time
+import uuid
+from functools import wraps
+from typing import Any, Dict
+
+# Configure logging
+logging.basicConfig(filename='output.log', level=logging.DEBUG, 
+                    format='%(asctime)s - %(levelname)s - %(message)s')
+
 # ## Data Gathering and Evaluation
 # I found 5 sources for daily weather data in New York City as follows:
 # 1. National Centers for Environmental Information (NCEI)
@@ -42,33 +50,40 @@ from tensorflow.keras.models import Sequential
 # Define the URL for NYC data
 url = "https://forecast.weather.gov/MapClick.php?lat=40.714530000000025&lon=-74.00711999999999"
 
-# Send a GET request to the URL
-response = requests.get(url)
+try:
+    # Send a GET request to the URL
+    response = requests.get(url)
 
-# Check if the request was successful (status code 200)
-if response.status_code == 200:
-    # Parse the HTML content
-    soup = BeautifulSoup(response.text, "html.parser")
-    observed_data_divs = soup.find_all("div", class_="tombstone-container")
+    # Check if the request was successful (status code 200)
+    if response.status_code == 200:
+        # Parse the HTML content
+        soup = BeautifulSoup(response.text, "html.parser")
+        observed_data_divs = soup.find_all("div", class_="tombstone-container")
 
-    timestamps = []
-    temperatures = []
+        timestamps = []
+        temperatures = []
 
-    # Extract data from API
-    for observed_div in observed_data_divs:
-        timestamp = observed_div.find("p", class_="period-name").get_text(strip=True)
-        temperature = observed_div.find("p", class_="temp").get_text(strip=True)
-        timestamps.append(timestamp)
-        temperatures.append(temperature)
+        # Extract data from API
+        for observed_div in observed_data_divs:
+            timestamp = observed_div.find("p", class_="period-name").get_text(strip=True)
+            temperature_element = observed_div.find("p", class_="temp")
+            if temperature_element:
+                temperature = temperature_element.get_text(strip=True)
+                timestamps.append(timestamp)
+                temperatures.append(temperature)
+            else:
+                logging.warning(f"Temperature element not found for timestamp: {timestamp}")
 
-    # Store data
-    nws_data = pd.DataFrame({
-        "Timestamp": timestamps,
-        "Temperature (Fahrenheit)": temperatures
-    })
-    print("API request successful")
-else:
-    print(f"API request failed with status code {response.status_code}")
+        # Store data
+        nws_data = pd.DataFrame({
+            "Timestamp": timestamps,
+            "Temperature (Fahrenheit)": temperatures
+        })
+        logging.info("API request successful")
+    else:
+        logging.error(f"API request failed with status code {response.status_code}")
+except requests.exceptions.RequestException as e:
+    logging.error(f"Error occurred during API request: {str(e)}")
 
 
 # ### National Centers for Environmental Information (NCEI)
@@ -206,6 +221,7 @@ def ncei_processing(df):
     processed_df['month'] = processed_df['date'].dt.month
     processed_df['day'] = processed_df['date'].dt.day
     processed_df['quarter'] = processed_df['date'].dt.quarter
+    logging.debug(f"Processed NCEI DataFrame: {processed_df.head()}")
     return processed_df
 
 ncei_df = ncei_processing(api)
@@ -216,6 +232,7 @@ ncei_df = ncei_processing(api)
 
 # Set 'Date' as the index
 ncei_df.set_index('date', inplace=True)
+logging.debug(f"NCEI DataFrame with 'date' as index: {ncei_df.head()}")
 # # Visualize the data
 plt.figure(figsize=(14, 5))
 plt.plot(ncei_df.index, ncei_df['max temp'], marker='o', linestyle='-', color='b')
@@ -237,6 +254,7 @@ plt.ylabel('Temperature (°F)')
 
 # Drop NaN values
 vs_df = vs_df.dropna()
+logging.debug(f"Visual Crossing DataFrame after dropping NaNs: {vs_df.head()}")
 # Set 'Date' as the index (required for time series plotting)
 vs_df.set_index('datetime', inplace=True)
 # Create the time series plot
@@ -258,6 +276,7 @@ plt.ylabel('Temperature (°F)')
 # Shift the max temp by one row to predict next day's max temperature
 vs_df_shift = vs_df.copy()
 vs_df_shift['tempmax_next'] = vs_df_shift['tempmax'].shift(-1)
+logging.debug(f"Visual Crossing DataFrame after shifting 'tempmax': {vs_df_shift.head()}")
 
 # Remove the first and last row because of the shift
 vs_df_shift = vs_df_shift.iloc[1:-1]
@@ -306,6 +325,7 @@ plt.show()
 # Shift the max temp by one row to predict next day's max temperature
 ncei_df_shift = ncei_df.copy()
 ncei_df_shift['max temp next'] = ncei_df_shift['max temp'].shift(-1)
+logging.debug(f"NCEI DataFrame after shifting 'max temp': {ncei_df_shift.head()}")
 
 # Remove the first and last row because of the shift
 ncei_df_shift = ncei_df_shift.iloc[1:-1]
@@ -365,6 +385,7 @@ plt.show()
 # Extract the feature and target data
 features = ncei_df[['avg wind speed','precipitation','snowfall','snow depth','min temp','max temp']].values.astype(float)
 target = ncei_df['max temp'].values.astype(float)
+logging.debug(f"Features shape: {features.shape}, Target shape: {target.shape}")
 
 # Normalize the data
 scaler = MinMaxScaler(feature_range=(0, 1))
@@ -468,6 +489,7 @@ plt.show()
 
 # Extract the temperature values and convert them to an array
 temperatures = ncei_df['max temp'].values.astype(float)
+logging.debug(f"Temperatures shape: {temperatures.shape}")
 
 # Normalize the data to be in the range [0, 1]
 scaler = MinMaxScaler(feature_range=(0, 1))
@@ -626,8 +648,9 @@ print(f"The maximum temperature today is: {y_pred_today}")
 # Add these imports at the top
 import time
 import uuid
-from typing import Dict, Any
 from functools import wraps
+from typing import Any, Dict
+
 
 # Custom exceptions
 class KalshiAPIError(Exception):
@@ -635,6 +658,7 @@ class KalshiAPIError(Exception):
         self.status_code = status_code
         self.message = message
         super().__init__(f"Kalshi API Error {status_code}: {message}")
+        logging.error(f"Kalshi API Error {status_code}: {message}")
 
 # Rate limiter class
 class RateLimiter:
@@ -753,7 +777,7 @@ def trade_temperature():
 
         # Check exchange status
         status = client.get_exchange_status()
-        print("Exchange status:", status)
+        logging.info(f"Exchange status: {status}")
 
         # Get today's event ticker
         today_date = datetime.date.today()
@@ -791,12 +815,12 @@ def trade_temperature():
         }
 
         order_response = client.create_order(order_params)
-        print("Order placed:", order_response)
+        logging.info(f"Order placed: {order_response}")
 
     except KalshiAPIError as e:
-        print(f"API Error: {e.message}")
+        logging.error(f"API Error: {e.message}")
     except Exception as e:
-        print(f"Error: {str(e)}")
+        logging.error(f"Error: {str(e)}")
 
 if __name__ == "__main__":
     trade_temperature()
