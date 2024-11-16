@@ -152,17 +152,36 @@ else:
     print(f"API request failed with status code {response.status_code}")
 
 
-# In[407]:
+In[407]:
 
 
-vs_df = pd.read_csv("visual_crossing.csv")
+try:
+    vs_df = pd.read_csv("visual_crossing.csv")
+    # Select only relevant columns
+    vs_df = vs_df[['datetime', 'tempmax', 'dew', 'humidity', 'precip', 'windgust',
+                   'windspeed', 'sealevelpressure', 'solarradiation', 'solarenergy']]
+    # Convert datetime column to datetime data type
+    vs_df['datetime'] = pd.to_datetime(vs_df['datetime'])
+except FileNotFoundError:
+    print("The 'visual_crossing.csv' file is missing. Skipping the processing of Visual Crossing data.")
+    vs_df = None
+except pd.errors.EmptyDataError:
+    print("The 'visual_crossing.csv' file is empty. Skipping the processing of Visual Crossing data.")
+    vs_df = None
 
-# Select only relevant columns
-vs_df = vs_df[['datetime', 'tempmax', 'dew', 'humidity', 'precip', 'windgust',
-       'windspeed', 'sealevelpressure', 'solarradiation', 'solarenergy']]
-
-# Convert datetime column to datetime data type
-vs_df['datetime'] = pd.to_datetime(vs_df['datetime'])
+# Rest of the code that uses vs_df
+if vs_df is not None:
+    # Drop NaN values
+    vs_df = vs_df.dropna()
+    logging.debug(f"Visual Crossing DataFrame after dropping NaNs: {vs_df.head()}")
+    # Set 'Date' as the index (required for time series plotting)
+    vs_df.set_index('datetime', inplace=True)
+    # Create the time series plot
+    plt.figure(figsize=(14, 6))
+    plt.plot(vs_df.index, vs_df['tempmax'], marker='o', linestyle='-', color='b')
+    plt.title('New York Max Temperature (2022 - 2023)')
+    plt.xlabel('Date')
+    plt.ylabel('Temperature (°F)')
 
 
 # ### Yahoo Weather
