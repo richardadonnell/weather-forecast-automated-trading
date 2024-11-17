@@ -235,6 +235,9 @@ def ncei_processing(df: pd.DataFrame) -> pd.DataFrame:
             logging.error("Empty dataframe provided to ncei_processing")
             return pd.DataFrame()
         
+        # Debug print to see column names
+        logging.debug(f"Columns in input DataFrame: {df.columns.tolist()}")
+        
         # Remove duplicates before pivoting
         df = df.drop_duplicates(subset=['date', 'datatype', 'value'])
         
@@ -245,6 +248,9 @@ def ncei_processing(df: pd.DataFrame) -> pd.DataFrame:
             values='value',
             aggfunc='first'  # Take first value if duplicates exist
         ).reset_index()
+        
+        # Debug print after pivot
+        logging.debug(f"Columns after pivot: {processed_df.columns.tolist()}")
         
         # Rename columns to be descriptive
         processed_df = processed_df.rename(columns={
@@ -280,8 +286,8 @@ def ncei_processing(df: pd.DataFrame) -> pd.DataFrame:
 # Main execution block
 try:
     # Define date range for data collection
-    start_date = datetime.strptime("2019-01-01", "%Y-%m-%d").date()  # Changed to start of 2019
-    end_date = datetime.now().date()  # Get data up to today
+    start_date = datetime.strptime("2019-01-01", "%Y-%m-%d").date()
+    end_date = datetime.now().date()
     
     # Get data from NCEI API
     api_data = get_ncei_data(start_date, end_date)
@@ -293,17 +299,20 @@ try:
         if not ncei_df.empty:
             logging.info("Successfully processed NCEI data")
             
-            # Set index and create visualization
-            ncei_df.set_index('date', inplace=True)
-            
-            # Visualize the temperature data
-            plt.figure(figsize=(14, 5))
-            plt.plot(ncei_df.index, ncei_df['max temp'], marker='o', linestyle='-', color='b')
-            plt.title('New York Max Temperature (2019 - 2024)')
-            plt.xlabel('Date')
-            plt.ylabel('Temperature (°F)')
-            plt.grid(True)
-            plt.show()
+            # Check if 'date' column exists before setting index
+            if 'date' in ncei_df.columns:
+                ncei_df.set_index('date', inplace=True)
+                
+                # Visualize the temperature data
+                plt.figure(figsize=(14, 5))
+                plt.plot(ncei_df.index, ncei_df['max temp'], marker='o', linestyle='-', color='b')
+                plt.title('New York Max Temperature (2019 - 2024)')
+                plt.xlabel('Date')
+                plt.ylabel('Temperature (°F)')
+                plt.grid(True)
+                plt.show()
+            else:
+                logging.error(f"'date' column not found. Available columns: {ncei_df.columns.tolist()}")
         else:
             logging.error("Failed to process NCEI data")
     else:
@@ -324,14 +333,10 @@ except Exception as e:
 VC_API_KEY = "WS8SPUNTV45687SM8PE4SP8EC"  # Your API key
 VC_BASE_URL = "https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline"
 
-def get_visual_crossing_data(start_date: str, end_date: str, chunk_size: int = 180) -> pd.DataFrame:
+def get_visual_crossing_data(start_date: str, end_date: str) -> pd.DataFrame:
     """
-    Get weather data from Visual Crossing API in smaller chunks to stay within rate limits.
-    
-    Args:
-        start_date: Start date in YYYY-MM-DD format
-        end_date: End date in YYYY-MM-DD format
-        chunk_size: Number of days per request (default 180 to stay under 1000 record limit)
+    Get weather data from Visual Crossing API with proper rate limiting and chunking.
+    Uses Timeline API endpoint with optimized query parameters.
     """
     VC_API_KEY = "WS8SPUNTV45687SM8PE4SP8EC"
     VC_BASE_URL = "https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline"
@@ -340,48 +345,71 @@ def get_visual_crossing_data(start_date: str, end_date: str, chunk_size: int = 1
     current_date = datetime.strptime(start_date, "%Y-%m-%d")
     end_datetime = datetime.strptime(end_date, "%Y-%m-%d")
     
+    # Reduce data points by only requesting daily data
+    params = {
+        "unitGroup": "us",
+        "include": "days",  # Only include daily data, not hourly
+        "key": VC_API_KEY,
+        "contentType": "json",
+        "elements": "datetime,tempmax,tempmin,temp,humidity,precip,windspeed"  # Only request needed elements
+    }
+    
+    # Use smaller chunks (90 days) to stay well under the 1000 record limit
+    chunk_size = 90
+    retry_count = 0
+    max_retries = 3
+    
     while current_date <= end_datetime:
-        # Calculate chunk end date
         chunk_end = min(current_date + timedelta(days=chunk_size), end_datetime)
         
-        # Construct URL for this chunk
         location = "New York City,USA"
         url = f"{VC_BASE_URL}/{urllib.parse.quote(location)}/{current_date.strftime('%Y-%m-%d')}/{chunk_end.strftime('%Y-%m-%d')}"
         
-        params = {
-            "unitGroup": "us",
-            "include": "days",
-            "key": VC_API_KEY,
-            "contentType": "json"
-        }
-
-        try:
-            logging.info(f"Requesting data for period {current_date.strftime('%Y-%m-%d')} to {chunk_end.strftime('%Y-%m-%d')}")
-            response = requests.get(url, params=params)
-            
-            if response.status_code == 200:
-                data = response.json()
-                if 'days' in data:
-                    chunk_df = pd.DataFrame(data['days'])
-                    all_data.append(chunk_df)
-                    logging.info(f"Successfully retrieved {len(chunk_df)} days of data")
-                else:
-                    logging.warning(f"No daily data found in response for period {current_date} to {chunk_end}")
-            elif response.status_code == 429:  # Rate limit exceeded
-                logging.warning("Rate limit exceeded, waiting 60 seconds...")
-                time.sleep(60)
-                continue
-            else:
-                logging.error(f"API request failed with status code {response.status_code}: {response.text}")
+        success = False
+        while not success and retry_count < max_retries:
+            try:
+                logging.info(f"Requesting data for period {current_date.strftime('%Y-%m-%d')} to {chunk_end.strftime('%Y-%m-%d')}")
+                response = requests.get(url, params=params)
                 
-            # Rate limiting - be nice to the API
-            time.sleep(1)
+                if response.status_code == 200:
+                    data = response.json()
+                    if 'days' in data:
+                        chunk_df = pd.DataFrame(data['days'])
+                        all_data.append(chunk_df)
+                        logging.info(f"Successfully retrieved {len(chunk_df)} days of data")
+                        success = True
+                    else:
+                        logging.warning(f"No daily data found in response for period {current_date} to {chunk_end}")
+                        success = True  # Consider it a success to move to next chunk
+                        
+                elif response.status_code == 429:  # Rate limit exceeded
+                    retry_count += 1
+                    wait_time = min(60 * retry_count, 300)  # Exponential backoff up to 5 minutes
+                    logging.warning(f"Rate limit exceeded, waiting {wait_time} seconds... (Attempt {retry_count}/{max_retries})")
+                    time.sleep(wait_time)
+                    
+                else:
+                    logging.error(f"API request failed with status code {response.status_code}: {response.text}")
+                    retry_count += 1
+                    time.sleep(10)  # Wait before retry
+                    
+            except requests.exceptions.RequestException as e:
+                logging.error(f"API request failed: {str(e)}")
+                retry_count += 1
+                time.sleep(10)
+                
+        if not success:
+            logging.error(f"Failed to retrieve data after {max_retries} attempts")
+            break
             
-        except requests.exceptions.RequestException as e:
-            logging.error(f"API request failed: {str(e)}")
-            
+        # Reset retry count for next chunk
+        retry_count = 0
+        
         # Move to next chunk
         current_date = chunk_end + timedelta(days=1)
+        
+        # Rate limiting - minimum 1 second between requests
+        time.sleep(1)
     
     if not all_data:
         logging.error("No data retrieved from Visual Crossing API")
@@ -408,8 +436,9 @@ def get_visual_crossing_data(start_date: str, end_date: str, chunk_size: int = 1
 
 # Usage
 try:
-    start_date = "2020-11-01"
-    end_date = "2024-11-01"
+    # Request smaller date range to stay within limits
+    start_date = "2023-01-01"  # More recent date range
+    end_date = "2023-12-31"    # One year of data
     
     vs_df = get_visual_crossing_data(start_date, end_date)
     
@@ -421,7 +450,7 @@ try:
         # Create visualization
         plt.figure(figsize=(14, 6))
         plt.plot(vs_df.index, vs_df['tempmax'], marker='o', linestyle='-', color='b')
-        plt.title('New York Max Temperature (2020 - 2024)')
+        plt.title('New York Max Temperature (2023)')
         plt.xlabel('Date')
         plt.ylabel('Temperature (°F)')
         plt.grid(True)
