@@ -335,7 +335,7 @@ VC_BASE_URL = "https://weather.visualcrossing.com/VisualCrossingWebServices/rest
 
 def get_visual_crossing_data(start_date: str, end_date: str) -> pd.DataFrame:
     """
-    Get weather data from Visual Crossing API with proper rate limiting and chunking.
+    Get weather data from Visual Crossing API with improved rate limiting and chunking.
     Uses Timeline API endpoint with optimized query parameters.
     """
     VC_API_KEY = "WS8SPUNTV45687SM8PE4SP8EC"
@@ -345,30 +345,36 @@ def get_visual_crossing_data(start_date: str, end_date: str) -> pd.DataFrame:
     current_date = datetime.strptime(start_date, "%Y-%m-%d")
     end_datetime = datetime.strptime(end_date, "%Y-%m-%d")
     
-    # Reduce data points by only requesting daily data
+    # Optimize query parameters to reduce data load
     params = {
         "unitGroup": "us",
-        "include": "days",  # Only include daily data, not hourly
+        "include": "days",  # Only include daily data
         "key": VC_API_KEY,
         "contentType": "json",
-        "elements": "datetime,tempmax,tempmin,temp,humidity,precip,windspeed"  # Only request needed elements
+        "elements": "datetime,tempmax",  # Only request absolutely necessary elements
+        "options": "nonulls"  # Skip null values to reduce data size
     }
     
-    # Use smaller chunks (90 days) to stay well under the 1000 record limit
-    chunk_size = 90
-    retry_count = 0
+    # Use smaller chunks (30 days) to stay well under the 1000 record limit
+    # Documentation recommends smaller chunks for better reliability
+    chunk_size = 30
     max_retries = 3
     
     while current_date <= end_datetime:
         chunk_end = min(current_date + timedelta(days=chunk_size), end_datetime)
-        
         location = "New York City,USA"
+        
+        # Construct URL according to documentation
         url = f"{VC_BASE_URL}/{urllib.parse.quote(location)}/{current_date.strftime('%Y-%m-%d')}/{chunk_end.strftime('%Y-%m-%d')}"
         
+        retry_count = 0
         success = False
+        
         while not success and retry_count < max_retries:
             try:
                 logging.info(f"Requesting data for period {current_date.strftime('%Y-%m-%d')} to {chunk_end.strftime('%Y-%m-%d')}")
+                
+                # Make the request
                 response = requests.get(url, params=params)
                 
                 if response.status_code == 200:
@@ -380,36 +386,35 @@ def get_visual_crossing_data(start_date: str, end_date: str) -> pd.DataFrame:
                         success = True
                     else:
                         logging.warning(f"No daily data found in response for period {current_date} to {chunk_end}")
-                        success = True  # Consider it a success to move to next chunk
+                        success = True  # Move to next chunk
                         
                 elif response.status_code == 429:  # Rate limit exceeded
                     retry_count += 1
-                    wait_time = min(60 * retry_count, 300)  # Exponential backoff up to 5 minutes
+                    # Implement exponential backoff with longer initial wait
+                    wait_time = min(120 * (2 ** (retry_count - 1)), 300)  # Max 5 minutes
                     logging.warning(f"Rate limit exceeded, waiting {wait_time} seconds... (Attempt {retry_count}/{max_retries})")
                     time.sleep(wait_time)
                     
                 else:
                     logging.error(f"API request failed with status code {response.status_code}: {response.text}")
                     retry_count += 1
-                    time.sleep(10)  # Wait before retry
+                    time.sleep(30)  # Longer wait between retries
                     
             except requests.exceptions.RequestException as e:
                 logging.error(f"API request failed: {str(e)}")
                 retry_count += 1
-                time.sleep(10)
+                time.sleep(30)
                 
         if not success:
             logging.error(f"Failed to retrieve data after {max_retries} attempts")
-            break
+            # Don't break, try next chunk
             
-        # Reset retry count for next chunk
-        retry_count = 0
-        
         # Move to next chunk
         current_date = chunk_end + timedelta(days=1)
         
-        # Rate limiting - minimum 1 second between requests
-        time.sleep(1)
+        # Implement proper rate limiting between requests
+        # Documentation suggests minimum 1 second between requests
+        time.sleep(2)  # Being more conservative with 2 seconds
     
     if not all_data:
         logging.error("No data retrieved from Visual Crossing API")
@@ -436,21 +441,19 @@ def get_visual_crossing_data(start_date: str, end_date: str) -> pd.DataFrame:
 
 # Usage
 try:
-    # Request smaller date range to stay within limits
-    start_date = "2023-01-01"  # More recent date range
-    end_date = "2023-12-31"    # One year of data
+    # Request even smaller date range to stay within fair use limits
+    start_date = "2023-01-01"
+    end_date = "2023-03-31"  # Only 3 months at a time
     
     vs_df = get_visual_crossing_data(start_date, end_date)
     
     if not vs_df.empty:
-        # Process the DataFrame
         vs_df['datetime'] = pd.to_datetime(vs_df['datetime'])
         vs_df = vs_df.set_index('datetime')
         
-        # Create visualization
         plt.figure(figsize=(14, 6))
         plt.plot(vs_df.index, vs_df['tempmax'], marker='o', linestyle='-', color='b')
-        plt.title('New York Max Temperature (2023)')
+        plt.title('New York Max Temperature (Q1 2023)')
         plt.xlabel('Date')
         plt.ylabel('Temperature (°F)')
         plt.grid(True)
