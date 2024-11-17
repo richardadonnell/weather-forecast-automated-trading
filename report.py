@@ -352,15 +352,23 @@ def get_visual_crossing_data(start_date: str, end_date: str) -> pd.DataFrame:
         "key": VC_API_KEY,
         "contentType": "json",
         "elements": "datetime,tempmax",  # Only request absolutely necessary elements
-        "options": "nonulls"  # Skip null values to reduce data size
+        "options": "nonulls",  # Skip null values to reduce data size
+        "maxDistance": "50",  # Limit station distance
+        "maxStations": "1"    # Use only closest station
     }
     
-    # Use smaller chunks (30 days) to stay well under the 1000 record limit
-    # Documentation recommends smaller chunks for better reliability
-    chunk_size = 30
+    # Use smaller chunks (3 days) to stay well under limits
+    chunk_size = 3  # Reduced to 3 days per request
     max_retries = 3
+    request_count = 0
     
     while current_date <= end_datetime:
+        # If we've made too many requests, wait longer
+        if request_count >= 5:  # Limit to 5 requests before long pause
+            logging.info("Reached request limit, pausing for cool-down...")
+            time.sleep(60)  # 1 minute cool-down
+            request_count = 0
+            
         chunk_end = min(current_date + timedelta(days=chunk_size), end_datetime)
         location = "New York City,USA"
         
@@ -376,6 +384,7 @@ def get_visual_crossing_data(start_date: str, end_date: str) -> pd.DataFrame:
                 
                 # Make the request
                 response = requests.get(url, params=params)
+                request_count += 1
                 
                 if response.status_code == 200:
                     data = response.json()
@@ -384,37 +393,40 @@ def get_visual_crossing_data(start_date: str, end_date: str) -> pd.DataFrame:
                         all_data.append(chunk_df)
                         logging.info(f"Successfully retrieved {len(chunk_df)} days of data")
                         success = True
+                        # Wait between successful requests
+                        time.sleep(30)  # 30 second pause between requests
                     else:
                         logging.warning(f"No daily data found in response for period {current_date} to {chunk_end}")
                         success = True  # Move to next chunk
                         
                 elif response.status_code == 429:  # Rate limit exceeded
                     retry_count += 1
-                    # Implement exponential backoff with longer initial wait
-                    wait_time = min(120 * (2 ** (retry_count - 1)), 300)  # Max 5 minutes
+                    # Start with a longer initial wait and use exponential backoff
+                    wait_time = 600 * (2 ** (retry_count - 1))  # Start at 10 minutes
                     logging.warning(f"Rate limit exceeded, waiting {wait_time} seconds... (Attempt {retry_count}/{max_retries})")
                     time.sleep(wait_time)
+                    request_count = 0  # Reset request count after rate limit
                     
                 else:
                     logging.error(f"API request failed with status code {response.status_code}: {response.text}")
                     retry_count += 1
-                    time.sleep(30)  # Longer wait between retries
+                    time.sleep(120)  # 2 minute wait between error retries
                     
             except requests.exceptions.RequestException as e:
                 logging.error(f"API request failed: {str(e)}")
                 retry_count += 1
-                time.sleep(30)
+                time.sleep(120)
                 
         if not success:
             logging.error(f"Failed to retrieve data after {max_retries} attempts")
-            # Don't break, try next chunk
+            # Break the main loop if we hit persistent rate limits
+            break
             
         # Move to next chunk
         current_date = chunk_end + timedelta(days=1)
         
-        # Implement proper rate limiting between requests
-        # Documentation suggests minimum 1 second between requests
-        time.sleep(2)  # Being more conservative with 2 seconds
+        # Conservative rate limiting between requests
+        time.sleep(30)  # 30 second minimum between requests
     
     if not all_data:
         logging.error("No data retrieved from Visual Crossing API")
@@ -441,9 +453,9 @@ def get_visual_crossing_data(start_date: str, end_date: str) -> pd.DataFrame:
 
 # Usage
 try:
-    # Request even smaller date range to stay within fair use limits
+    # Request even smaller initial date range
     start_date = "2023-01-01"
-    end_date = "2023-03-31"  # Only 3 months at a time
+    end_date = "2023-01-07"  # Only 1 week at a time
     
     vs_df = get_visual_crossing_data(start_date, end_date)
     
@@ -453,7 +465,7 @@ try:
         
         plt.figure(figsize=(14, 6))
         plt.plot(vs_df.index, vs_df['tempmax'], marker='o', linestyle='-', color='b')
-        plt.title('New York Max Temperature (Q1 2023)')
+        plt.title('New York Max Temperature (First Week of January 2023)')
         plt.xlabel('Date')
         plt.ylabel('Temperature (°F)')
         plt.grid(True)
