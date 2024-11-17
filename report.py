@@ -324,100 +324,113 @@ except Exception as e:
 VC_API_KEY = "WS8SPUNTV45687SM8PE4SP8EC"  # Your API key
 VC_BASE_URL = "https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline"
 
-def get_visual_crossing_data():
-    """Get weather data from Visual Crossing API"""
-    try:
-        # Format dates and location
-        location = "New York City,USA"
-        start_date = "2020-11-01"
-        end_date = "2024-11-01"
+def get_visual_crossing_data(start_date: str, end_date: str, chunk_size: int = 180) -> pd.DataFrame:
+    """
+    Get weather data from Visual Crossing API in smaller chunks to stay within rate limits.
+    
+    Args:
+        start_date: Start date in YYYY-MM-DD format
+        end_date: End date in YYYY-MM-DD format
+        chunk_size: Number of days per request (default 180 to stay under 1000 record limit)
+    """
+    VC_API_KEY = "WS8SPUNTV45687SM8PE4SP8EC"
+    VC_BASE_URL = "https://weather.visualcrossing.com/VisualCrossingWebServices/rest/services/timeline"
+    
+    all_data = []
+    current_date = datetime.strptime(start_date, "%Y-%m-%d")
+    end_datetime = datetime.strptime(end_date, "%Y-%m-%d")
+    
+    while current_date <= end_datetime:
+        # Calculate chunk end date
+        chunk_end = min(current_date + timedelta(days=chunk_size), end_datetime)
         
-        # Construct URL with proper URL encoding
-        url = f"{VC_BASE_URL}/{urllib.parse.quote(location)}/{start_date}/{end_date}"
+        # Construct URL for this chunk
+        location = "New York City,USA"
+        url = f"{VC_BASE_URL}/{urllib.parse.quote(location)}/{current_date.strftime('%Y-%m-%d')}/{chunk_end.strftime('%Y-%m-%d')}"
+        
         params = {
             "unitGroup": "us",
             "include": "days",
             "key": VC_API_KEY,
-            "contentType": "csv"  # Changed to CSV format
+            "contentType": "json"
         }
 
-        # Make API request
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        
-        # Process JSON response
-        data = response.json()
-        if 'days' not in data:
-            raise ValueError("No daily data found in API response")
+        try:
+            logging.info(f"Requesting data for period {current_date.strftime('%Y-%m-%d')} to {chunk_end.strftime('%Y-%m-%d')}")
+            response = requests.get(url, params=params)
             
-        # Convert to DataFrame
-        df = pd.DataFrame(data['days'])
-        
-        # Select relevant columns
-        df = df[['datetime', 'tempmax', 'dew', 'humidity', 'precip', 'windgust',
-                'windspeed', 'sealevelpressure', 'solarradiation', 'solarenergy']]
-        
-        # Convert datetime
-        df['datetime'] = pd.to_datetime(df['datetime'])
-        
-        logging.info("Successfully retrieved and processed Visual Crossing data")
-        return df
-        
-    except requests.exceptions.RequestException as e:
-        logging.error(f"API request failed: {str(e)}")
-        return None
-    except (ValueError, KeyError) as e:
-        logging.error(f"Error processing API response: {str(e)}")
-        return None
-    except Exception as e:
-        logging.error(f"Unexpected error: {str(e)}")
-        return None
-
-# Get data from API or fallback to CSV
-try:
-    vs_df = get_visual_crossing_data()
+            if response.status_code == 200:
+                data = response.json()
+                if 'days' in data:
+                    chunk_df = pd.DataFrame(data['days'])
+                    all_data.append(chunk_df)
+                    logging.info(f"Successfully retrieved {len(chunk_df)} days of data")
+                else:
+                    logging.warning(f"No daily data found in response for period {current_date} to {chunk_end}")
+            elif response.status_code == 429:  # Rate limit exceeded
+                logging.warning("Rate limit exceeded, waiting 60 seconds...")
+                time.sleep(60)
+                continue
+            else:
+                logging.error(f"API request failed with status code {response.status_code}: {response.text}")
+                
+            # Rate limiting - be nice to the API
+            time.sleep(1)
+            
+        except requests.exceptions.RequestException as e:
+            logging.error(f"API request failed: {str(e)}")
+            
+        # Move to next chunk
+        current_date = chunk_end + timedelta(days=1)
     
-    # If API fails, try reading from CSV
-    if vs_df is None:
+    if not all_data:
+        logging.error("No data retrieved from Visual Crossing API")
+        return pd.DataFrame()
+        
+    # Combine all chunks
+    df = pd.concat(all_data, ignore_index=True)
+    
+    # Try to read from CSV if API fails
+    if df.empty:
         logging.info("Falling back to CSV file")
         try:
-            vs_df = pd.read_csv("visual_crossing.csv")
-            if vs_df.empty:
+            df = pd.read_csv("visual_crossing.csv")
+            if df.empty:
                 logging.error("Visual Crossing CSV file is empty")
-                vs_df = None
             else:
-                vs_df['datetime'] = pd.to_datetime(vs_df['datetime'])
-                vs_df = vs_df[['datetime', 'tempmax', 'dew', 'humidity', 'precip', 'windgust',
-                              'windspeed', 'sealevelpressure', 'solarradiation', 'solarenergy']]
+                df['datetime'] = pd.to_datetime(df['datetime'])
         except FileNotFoundError:
             logging.error("Visual Crossing CSV file not found")
-            vs_df = None
         except Exception as e:
             logging.error(f"Error reading Visual Crossing CSV: {str(e)}")
-            vs_df = None
     
-    # Process the DataFrame
-    if vs_df is not None:
-        # Drop NaN values
-        vs_df = vs_df.dropna()
-        logging.debug(f"Visual Crossing DataFrame after dropping NaNs: {vs_df.head()}")
+    return df
+
+# Usage
+try:
+    start_date = "2020-11-01"
+    end_date = "2024-11-01"
+    
+    vs_df = get_visual_crossing_data(start_date, end_date)
+    
+    if not vs_df.empty:
+        # Process the DataFrame
+        vs_df['datetime'] = pd.to_datetime(vs_df['datetime'])
+        vs_df = vs_df.set_index('datetime')
         
-        # Set 'datetime' as the index
-        vs_df.set_index('datetime', inplace=True)
-        
-        # Create the time series plot
+        # Create visualization
         plt.figure(figsize=(14, 6))
         plt.plot(vs_df.index, vs_df['tempmax'], marker='o', linestyle='-', color='b')
-        plt.title('New York Max Temperature (2022 - 2024)')
+        plt.title('New York Max Temperature (2020 - 2024)')
         plt.xlabel('Date')
         plt.ylabel('Temperature (°F)')
+        plt.grid(True)
         plt.show()
     else:
         logging.error("Failed to obtain weather data from both API and CSV")
         
 except Exception as e:
     logging.error(f"Error processing weather data: {str(e)}")
-    vs_df = None
 
 
 # ### Yahoo Weather
