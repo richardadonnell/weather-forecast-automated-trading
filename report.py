@@ -113,25 +113,34 @@ except requests.exceptions.RequestException as e:
 # In[405]:
 
 
-# NCEI API Constants
-NCEI_API_KEY = "hQjOAltlsPnryPJlIEkjkzQqJFPtGOpe"
-NCEI_BASE_URL = "https://www.ncei.noaa.gov/cdo-web/api/v2/data"
-NCEI_STATION_ID = "GHCND:USW00094728"  # Central Park Station
+# Add these imports at the top of the file
+import urllib.parse
+from datetime import date, datetime, timedelta
 
-def get_ncei_data(start_date: datetime.date, end_date: datetime.date) -> pd.DataFrame:
-    api_data = pd.DataFrame()
+
+# Update the NCEI API section
+def get_ncei_data(start_date: date, end_date: date) -> pd.DataFrame:
+    """
+    Fetch weather data from NCEI API for the given date range.
+    Returns a pandas DataFrame with the weather data.
+    """
+    NCEI_API_KEY = "hQjOAltlsPnryPJlIEkjkzQqJFPtGOpe"
+    NCEI_BASE_URL = "https://www.ncdc.noaa.gov/cdo-web/api/v2/data"
+    NCEI_STATION_ID = "GHCND:USW00094728"  # Central Park Station
     
-    while start_date <= end_date:
+    api_data = pd.DataFrame()
+    current_date = start_date
+    
+    while current_date <= end_date:
         # NCEI limits to 1000 records per request
-        period_end = min(start_date + datetime.timedelta(days=100), end_date)
+        period_end = min(current_date + timedelta(days=365), end_date)
         
         params = {
             "datasetid": "GHCND",
             "stationid": NCEI_STATION_ID,
-            "startdate": start_date.strftime("%Y-%m-%d"),
+            "startdate": current_date.strftime("%Y-%m-%d"),
             "enddate": period_end.strftime("%Y-%m-%d"),
             "units": "standard",
-            "datatypeid": "AWND,PRCP,SNOW,SNWD,TMAX,TMIN,WT01,WT03,WT08",
             "limit": 1000
         }
         
@@ -144,77 +153,106 @@ def get_ncei_data(start_date: datetime.date, end_date: datetime.date) -> pd.Data
             
             if response.status_code == 200:
                 data = response.json()
-                if "results" in data:
-                    json_data = pd.DataFrame(data["results"])
-                    api_data = pd.concat([api_data, json_data], ignore_index=True)
+                if "results" in data and data["results"]:
+                    temp_df = pd.DataFrame(data["results"])
+                    api_data = pd.concat([api_data, temp_df], ignore_index=True)
+                    logging.info(f"Successfully retrieved data for period {current_date} to {period_end}")
                 else:
-                    logging.warning(f"No results found for period {start_date} to {period_end}")
+                    logging.warning(f"No results found for period {current_date} to {period_end}")
             else:
                 logging.error(f"API request failed with status code {response.status_code}")
                 if response.status_code == 429:  # Too many requests
                     logging.warning("Rate limit exceeded, waiting 60 seconds...")
                     time.sleep(60)
                     continue
-                else:
-                    logging.error(f"API request failed with status code {response.status_code}: {response.text}")
-                    break  # Break the loop if a non-429 error occurs
             
             # Rate limiting - NCEI recommends no more than 5 requests per second
             time.sleep(0.2)
             
         except requests.exceptions.RequestException as e:
-            logging.error(f"API request failed for period {start_date} to {period_end}: {str(e)}")
+            logging.error(f"API request failed: {str(e)}")
             continue
         
-        start_date = period_end + datetime.timedelta(days=1)
-    
-    if api_data.empty:
-        logging.error("No data was retrieved from NCEI API")
+        current_date = period_end + timedelta(days=1)
     
     return api_data
 
-# Main NCEI data retrieval and processing
+# Define ncei_processing function before using it
+def ncei_processing(df: pd.DataFrame) -> pd.DataFrame:
+    """Process NCEI weather data into a clean DataFrame"""
+    try:
+        if df.empty:
+            logging.error("Empty dataframe provided to ncei_processing")
+            return pd.DataFrame()
+            
+        # Unpivot relevant columns
+        processed_df = df.pivot(index='date', columns=['datatype'], values='value')
+        processed_df = processed_df.reset_index()
+
+        # Rename columns to be descriptive
+        processed_df = processed_df.rename(columns={
+            'AWND': 'avg wind speed',
+            'PRCP': 'precipitation',
+            'SNOW': 'snowfall',
+            'SNWD': 'snow depth',
+            'TMAX': 'max temp',
+            'TMIN': 'min temp',
+            'WT01': 'fog',
+            'WT03': 'thunder',
+            'WT08': 'smoke/haze'
+        })
+
+        # Process NaN values
+        processed_df = processed_df.dropna(subset=['max temp'])
+        processed_df = processed_df.fillna(0)
+
+        # Extract date elements
+        processed_df['date'] = pd.to_datetime(processed_df['date'])
+        processed_df['year'] = processed_df['date'].dt.year
+        processed_df['month'] = processed_df['date'].dt.month
+        processed_df['day'] = processed_df['date'].dt.day
+        processed_df['quarter'] = processed_df['date'].dt.quarter
+        
+        logging.debug(f"Processed NCEI DataFrame: {processed_df.head()}")
+        return processed_df
+        
+    except Exception as e:
+        logging.error(f"Error in ncei_processing: {str(e)}")
+        return pd.DataFrame()
+
+# Main execution block
 try:
-    start_date = datetime.datetime.strptime("2019-08-01", "%Y-%m-%d").date()
-    last_date = datetime.datetime.strptime("2023-08-01", "%Y-%m-%d").date()
+    # Define date range for data collection
+    start_date = datetime.strptime("2019-08-01", "%Y-%m-%d").date()
+    end_date = datetime.strptime("2024-10-01", "%Y-%m-%d").date()
     
     # Get data from NCEI API
-    ncei_data = get_ncei_data(start_date, last_date)
+    api_data = get_ncei_data(start_date, end_date)
     
-    if not ncei_data.empty:
+    if not api_data.empty:
         # Process the data using ncei_processing function
-        ncei_df = ncei_processing(ncei_data)
+        ncei_df = ncei_processing(api_data)
         
         if not ncei_df.empty:
             logging.info("Successfully processed NCEI data")
             
             # Set index and create visualization
             ncei_df.set_index('date', inplace=True)
-            logging.debug(f"NCEI DataFrame with 'date' as index: {ncei_df.head()}")
             
             # Visualize the temperature data
             plt.figure(figsize=(14, 5))
             plt.plot(ncei_df.index, ncei_df['max temp'], marker='o', linestyle='-', color='b')
-            plt.title('New York Max Temperature (2019 - 2023)')
+            plt.title('New York Max Temperature (2019 - 2024)')
             plt.xlabel('Date')
             plt.ylabel('Temperature (°F)')
-            plt.show()
-
-            # Visualize the precipitation data
-            plt.figure(figsize=(14, 5))
-            plt.plot(ncei_df.index, ncei_df['precipitation'], marker='o', linestyle='-', color='b')
-            plt.title('New York Daily Precipitation (2019 - 2023)')
-            plt.xlabel('Date')
-            plt.ylabel('Precipitation (inches)')
             plt.show()
         else:
             logging.error("Failed to process NCEI data")
     else:
-        logging.error("Failed to retrieve NCEI data")
+        logging.error("No data retrieved from NCEI API")
         
 except Exception as e:
-    logging.error(f"Error processing NCEI data: {str(e)}")
-    ncei_df = pd.DataFrame()
+    logging.error(f"Error in main execution: {str(e)}")
 
 
 # ### Visual Crossing
@@ -236,13 +274,13 @@ def get_visual_crossing_data():
         start_date = "2020-11-01"
         end_date = "2021-11-01"
         
-        # Construct URL and parameters
+        # Construct URL with proper URL encoding
         url = f"{VC_BASE_URL}/{urllib.parse.quote(location)}/{start_date}/{end_date}"
         params = {
             "unitGroup": "us",
-            "include": "days",  # Changed from "day" to "days" per API docs
+            "include": "days",
             "key": VC_API_KEY,
-            "contentType": "json"  # Changed to JSON for easier processing
+            "contentType": "csv"  # Changed to CSV format
         }
 
         # Make API request
@@ -354,57 +392,6 @@ except Exception as e:
 # ### NCEI Data
 
 # In[408]:
-
-
-def ncei_processing(df):
-    """Process NCEI weather data into a clean DataFrame"""
-    try:
-        # Unpivot relevant columns
-        processed_df = df.pivot(index='date', columns=['datatype'], values='value')
-        processed_df = processed_df.reset_index()
-
-        # Rename columns to be descriptive
-        processed_df = processed_df.rename(columns={
-            'AWND': 'avg wind speed',
-            'PRCP': 'precipitation',
-            'SNOW': 'snowfall',
-            'SNWD': 'snow depth',
-            'TMAX': 'max temp',
-            'TMIN': 'min temp',
-            'WT01': 'fog',
-            'WT03': 'thunder',
-            'WT08': 'smoke/haze'
-        })
-
-        # Process NaN values
-        processed_df = processed_df.dropna(subset=[
-            'avg wind speed',
-            'precipitation',
-            'snowfall',
-            'snow depth',
-            'max temp',
-            'min temp'
-        ])
-        processed_df = processed_df.fillna(0)
-
-        # Extract date elements
-        processed_df['date'] = pd.to_datetime(processed_df['date'])
-        processed_df['year'] = processed_df['date'].dt.year
-        processed_df['month'] = processed_df['date'].dt.month
-        processed_df['day'] = processed_df['date'].dt.day
-        processed_df['quarter'] = processed_df['date'].dt.quarter
-        
-        logging.debug(f"Processed NCEI DataFrame: {processed_df.head()}")
-        return processed_df
-        
-    except Exception as e:
-        logging.error(f"Error in ncei_processing: {str(e)}")
-        return pd.DataFrame()
-
-ncei_df = ncei_processing(api)
-
-
-# In[409]:
 
 
 # Set 'Date' as the index
