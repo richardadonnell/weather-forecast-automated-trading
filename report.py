@@ -121,74 +121,131 @@ from datetime import date, datetime, timedelta
 # Update the NCEI API section
 def get_ncei_data(start_date: date, end_date: date) -> pd.DataFrame:
     """
-    Fetch weather data from NCEI API for the given date range.
-    Returns a pandas DataFrame with the weather data.
+    Fetch weather data from NCEI API for the given date range with improved error handling.
     """
     NCEI_API_KEY = "hQjOAltlsPnryPJlIEkjkzQqJFPtGOpe"
     NCEI_BASE_URL = "https://www.ncdc.noaa.gov/cdo-web/api/v2/data"
     NCEI_STATION_ID = "GHCND:USW00094728"  # Central Park Station
     
-    api_data = pd.DataFrame()
+    api_data = []
     current_date = start_date
     
     while current_date <= end_date:
-        # NCEI limits to 1000 records per request
-        period_end = min(current_date + timedelta(days=365), end_date)
+        # Request smaller chunks (180 days) to reduce load and probability of failure
+        period_end = min(current_date + timedelta(days=180), end_date)
+        offset = 0
+        max_retries = 3
         
-        params = {
-            "datasetid": "GHCND",
-            "stationid": NCEI_STATION_ID,
-            "startdate": current_date.strftime("%Y-%m-%d"),
-            "enddate": period_end.strftime("%Y-%m-%d"),
-            "units": "standard",
-            "limit": 1000
-        }
-        
-        headers = {
-            "token": NCEI_API_KEY
-        }
-        
-        try:
-            response = requests.get(NCEI_BASE_URL, params=params, headers=headers)
+        while True:  # Loop for pagination
+            params = {
+                "datasetid": "GHCND",
+                "stationid": NCEI_STATION_ID,
+                "startdate": current_date.strftime("%Y-%m-%d"),
+                "enddate": period_end.strftime("%Y-%m-%d"),
+                "units": "standard",
+                "limit": 1000,
+                "offset": offset
+            }
             
-            if response.status_code == 200:
-                data = response.json()
-                if "results" in data and data["results"]:
-                    temp_df = pd.DataFrame(data["results"])
-                    api_data = pd.concat([api_data, temp_df], ignore_index=True)
-                    logging.info(f"Successfully retrieved data for period {current_date} to {period_end}")
-                else:
-                    logging.warning(f"No results found for period {current_date} to {period_end}")
-            else:
-                logging.error(f"API request failed with status code {response.status_code}")
-                if response.status_code == 429:  # Too many requests
-                    logging.warning("Rate limit exceeded, waiting 60 seconds...")
-                    time.sleep(60)
-                    continue
+            headers = {
+                "token": NCEI_API_KEY
+            }
             
-            # Rate limiting - NCEI recommends no more than 5 requests per second
+            retry_count = 0
+            success = False
+            
+            while retry_count < max_retries and not success:
+                try:
+                    logging.info(f"Requesting data for period {current_date} to {period_end}, offset {offset}")
+                    response = requests.get(NCEI_BASE_URL, params=params, headers=headers)
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        if "results" in data and data["results"]:
+                            # Remove duplicates before extending
+                            new_results = data["results"]
+                            existing_dates = {(d['date'], d['datatype']) for d in api_data}
+                            unique_results = [
+                                r for r in new_results 
+                                if (r['date'], r['datatype']) not in existing_dates
+                            ]
+                            api_data.extend(unique_results)
+                            logging.info(f"Retrieved {len(unique_results)} new records")
+                            
+                            # Check if we need to get more records
+                            if len(data["results"]) < 1000:
+                                success = True
+                                break  # Exit retry loop and pagination loop
+                            offset += 1000  # Move to next page
+                            success = True  # Success for this page
+                        else:
+                            logging.info(f"No results found for period {current_date} to {period_end}")
+                            success = True
+                            break  # Exit retry loop and pagination loop
+                            
+                    elif response.status_code == 429:  # Too many requests
+                        logging.warning("Rate limit exceeded, waiting 60 seconds...")
+                        time.sleep(60)
+                        retry_count += 1
+                    elif response.status_code == 503:  # Service unavailable
+                        logging.warning(f"Service unavailable, attempt {retry_count + 1}/{max_retries}")
+                        time.sleep(10 * (retry_count + 1))  # Exponential backoff
+                        retry_count += 1
+                    else:
+                        logging.error(f"API request failed with status code {response.status_code}")
+                        retry_count += 1
+                    
+                except requests.exceptions.RequestException as e:
+                    logging.error(f"API request failed: {str(e)}")
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        time.sleep(5 * (retry_count + 1))
+                
+            # If all retries failed for this offset, move to next date range
+            if not success:
+                logging.error(f"Failed to retrieve data after {max_retries} attempts")
+                break
+                
+            # If we didn't get a full page of results, move to next date range
+            if success and len(data.get("results", [])) < 1000:
+                break
+                
+            # Rate limiting
             time.sleep(0.2)
             
-        except requests.exceptions.RequestException as e:
-            logging.error(f"API request failed: {str(e)}")
-            continue
-        
+        # Move to next date range
         current_date = period_end + timedelta(days=1)
     
-    return api_data
+    if not api_data:
+        logging.error("No data retrieved from NCEI API")
+        return pd.DataFrame()
+    
+    # Create DataFrame and remove duplicates
+    df = pd.DataFrame(api_data)
+    df = df.drop_duplicates(subset=['date', 'datatype', 'value'])
+    
+    logging.info(f"Retrieved total of {len(df)} records")
+    return df
 
 # Define ncei_processing function before using it
 def ncei_processing(df: pd.DataFrame) -> pd.DataFrame:
-    """Process NCEI weather data into a clean DataFrame"""
+    """Process NCEI weather data into a clean DataFrame with improved duplicate handling"""
     try:
         if df.empty:
             logging.error("Empty dataframe provided to ncei_processing")
             return pd.DataFrame()
-            
-        # Unpivot relevant columns
-        processed_df = df.pivot(index='date', columns=['datatype'], values='value')
-        processed_df = processed_df.reset_index()
-
+        
+        # Remove duplicates before pivoting
+        df = df.drop_duplicates(subset=['date', 'datatype', 'value'])
+        
+        # Pivot with aggfunc to handle any remaining duplicates
+        processed_df = df.pivot_table(
+            index='date',
+            columns='datatype',
+            values='value',
+            aggfunc='first'  # Take first value if duplicates exist
+        ).reset_index()
+        
         # Rename columns to be descriptive
         processed_df = processed_df.rename(columns={
             'AWND': 'avg wind speed',
@@ -223,8 +280,8 @@ def ncei_processing(df: pd.DataFrame) -> pd.DataFrame:
 # Main execution block
 try:
     # Define date range for data collection
-    start_date = datetime.strptime("2019-08-01", "%Y-%m-%d").date()
-    end_date = datetime.strptime("2024-10-01", "%Y-%m-%d").date()
+    start_date = datetime.strptime("2019-01-01", "%Y-%m-%d").date()  # Changed to start of 2019
+    end_date = datetime.now().date()  # Get data up to today
     
     # Get data from NCEI API
     api_data = get_ncei_data(start_date, end_date)
@@ -245,6 +302,7 @@ try:
             plt.title('New York Max Temperature (2019 - 2024)')
             plt.xlabel('Date')
             plt.ylabel('Temperature (°F)')
+            plt.grid(True)
             plt.show()
         else:
             logging.error("Failed to process NCEI data")
@@ -272,7 +330,7 @@ def get_visual_crossing_data():
         # Format dates and location
         location = "New York City,USA"
         start_date = "2020-11-01"
-        end_date = "2021-11-01"
+        end_date = "2024-11-01"
         
         # Construct URL with proper URL encoding
         url = f"{VC_BASE_URL}/{urllib.parse.quote(location)}/{start_date}/{end_date}"
@@ -350,7 +408,7 @@ try:
         # Create the time series plot
         plt.figure(figsize=(14, 6))
         plt.plot(vs_df.index, vs_df['tempmax'], marker='o', linestyle='-', color='b')
-        plt.title('New York Max Temperature (2022 - 2023)')
+        plt.title('New York Max Temperature (2022 - 2024)')
         plt.xlabel('Date')
         plt.ylabel('Temperature (°F)')
         plt.show()
@@ -752,7 +810,7 @@ plt.show()
 
 
 # Get recent NCEI's data to predict
-start_date = datetime.datetime.strptime("2023-08-01", "%Y-%m-%d").date()
+start_date = datetime.datetime.strptime("2024-10-01", "%Y-%m-%d").date()
 last_date = datetime.date.today() - datetime.timedelta(days=1)
 api_recent = pd.DataFrame()
 
